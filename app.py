@@ -397,6 +397,48 @@ def call_deepseek_market_analysis(text, model, output_style):
     return response.choices[0].message.content
 
 
+def call_deepseek_followup(question, model):
+    client = get_deepseek_client()
+    if client is None:
+        raise ValueError("没有读取到 DEEPSEEK_API_KEY。请先在 .env 文件里填写你的 DeepSeek API Key。")
+
+    source_text = st.session_state.get("analysis_source_text", "")
+    report = st.session_state.get("analysis_result", "")
+    source_text = source_text[:MAX_INPUT_CHARS]
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是一名财富管理市场研究助理。请基于用户上传的市场材料和已经生成的市场观点分析，"
+                "回答用户追问。回答要专业、清楚、能被客户经理直接使用；不要编造原文没有的具体数据；"
+                "涉及投资观点时必须说明依据和风险边界；不承诺收益，不给确定性买卖建议。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "以下是本次市场材料原文摘要/正文：\n"
+                f"{source_text}\n\n"
+                "以下是已经生成的市场观点分析：\n"
+                f"{report}\n\n"
+                "请记住以上上下文，后续围绕这份材料回答问题。"
+            ),
+        },
+    ]
+
+    for message in st.session_state.get("followup_messages", [])[-8:]:
+        messages.append({"role": message["role"], "content": message["content"]})
+    messages.append({"role": "user", "content": question})
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content
+
+
 SECTION_KEYWORDS = {
     "股票": [
         "股票",
@@ -1345,6 +1387,41 @@ def render_extracted_images(images):
                 st.caption(f"相关文字线索：{image['context']}")
 
 
+def render_followup_chat(model_name):
+    if not st.session_state.get("analysis_result"):
+        return
+
+    st.divider()
+    st.subheader("继续追问")
+    st.caption("围绕本次上传材料和已生成报告继续提问，例如：这个观点怎么跟稳健客户解释？短期机会里哪个风险最大？")
+
+    col_a, col_b = st.columns([1, 4])
+    with col_a:
+        if st.button("清空追问记录"):
+            st.session_state["followup_messages"] = []
+            st.rerun()
+
+    for message in st.session_state.get("followup_messages", []):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    question = st.chat_input("输入你的追问")
+    if question:
+        st.session_state.setdefault("followup_messages", [])
+        st.session_state["followup_messages"].append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
+
+        try:
+            with st.chat_message("assistant"):
+                with st.spinner("正在基于本次材料继续分析..."):
+                    answer = call_deepseek_followup(question, model_name.strip() or DEFAULT_DEEPSEEK_MODEL)
+                st.markdown(answer)
+            st.session_state["followup_messages"].append({"role": "assistant", "content": answer})
+        except Exception as exc:
+            st.error(f"追问失败：{exc}")
+
+
 api_ready = bool(os.getenv("DEEPSEEK_API_KEY"))
 api_status_class = "ready" if api_ready else "warn"
 api_status_text = "DeepSeek 已配置" if api_ready else "等待配置 API Key"
@@ -1444,12 +1521,17 @@ if st.button("生成市场观点分析", type="primary"):
                     model_name.strip() or DEFAULT_DEEPSEEK_MODEL,
                     output_style,
                 )
+            st.session_state["analysis_source_text"] = all_text
+            st.session_state["analysis_result"] = result
+            st.session_state["followup_messages"] = []
             st.divider()
             render_result(result)
             render_extracted_images(extracted_images)
         except Exception as exc:
             st.error(f"DeepSeek 调用失败：{exc}")
             st.info("请检查 .env 里的 DEEPSEEK_API_KEY 是否正确、网络是否可用、模型名称是否有效。")
+
+render_followup_chat(model_name)
 
 with st.sidebar:
     st.header("使用说明")
@@ -1460,6 +1542,7 @@ with st.sidebar:
     st.write("5. 可以选择客户经理、投顾、高净值、微信短版或晨会汇报风格。")
     st.write("6. 在线部署时建议设置 APP_PASSWORD，避免他人随意消耗 API 额度。")
     st.write("7. 点击“生成市场观点分析”。")
-    st.write("8. 复制完整报告，并按需打开下方支撑图表核对。")
+    st.write("8. 生成后可以在下方继续追问，围绕本次材料做讨论。")
+    st.write("9. 复制完整报告，并按需打开下方支撑图表核对。")
     st.divider()
     st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek。")
