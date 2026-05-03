@@ -281,9 +281,9 @@ def require_password():
     st.markdown(
         """
         <div class="app-hero">
-            <div class="app-kicker">访问验证</div>
-            <h1 class="app-title">Market Briefing Tool</h1>
-            <p class="app-subtitle">请输入访问密码后继续使用。</p>
+            <div class="app-kicker">财富管理客户沟通工作台</div>
+            <h1 class="app-title">Market Briefing Assistant</h1>
+            <p class="app-subtitle">请输入访问密码，进入市场观点分析工具。</p>
         </div>
         """,
         unsafe_allow_html=True,
