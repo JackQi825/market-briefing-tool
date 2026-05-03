@@ -24,10 +24,19 @@ st.set_page_config(page_title="Market Briefing Tool", page_icon="📊", layout="
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 MAX_INPUT_CHARS = 50000
 MAX_EXTRACTED_IMAGES = 8
 MIN_CHART_WIDTH = 420
 MIN_CHART_HEIGHT = 240
+
+OUTPUT_STYLES = {
+    "客户经理简洁版": "语言自然、简洁、适合客户经理直接转述。少用研报腔，重点讲清楚市场主线、配置启发和风险边界。",
+    "投顾专业版": "表达更专业，保留必要的宏观和资产配置逻辑，适合投顾、理财经理内部讨论或正式客户沟通。",
+    "高净值客户版": "语气稳健克制，强调组合配置、风险控制、资产分散和中长期视角，避免短线交易感。",
+    "微信短版": "整体更短、更像微信沟通内容，优先输出客户能快速读懂的结论和配置启发。",
+    "晨会汇报版": "结构更适合内部晨会，突出市场主线、资产观点、短期机会、风险提示和可跟进客户话术。",
+}
 
 CHART_RELEVANCE_KEYWORDS = [
     "图",
@@ -252,10 +261,45 @@ def get_deepseek_client():
     return OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
 
 
-def build_deepseek_prompt(text):
+def require_password():
+    if not APP_PASSWORD:
+        return True
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown(
+        """
+        <div class="app-hero">
+            <div class="app-kicker">访问验证</div>
+            <h1 class="app-title">Market Briefing Tool</h1>
+            <p class="app-subtitle">请输入访问密码后继续使用。</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    password = st.text_input("访问密码", type="password")
+    if st.button("进入工具", type="primary"):
+        if password == APP_PASSWORD:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("密码不正确，请重试。")
+    return False
+
+
+if not require_password():
+    st.stop()
+
+
+def build_deepseek_prompt(text, output_style):
     trimmed_text = text[:MAX_INPUT_CHARS]
+    style_instruction = OUTPUT_STYLES.get(output_style, OUTPUT_STYLES["客户经理简洁版"])
     return f"""
 你是一名财富管理客户经理的市场研究助理。请基于以下市场展望文件内容，生成一份“客户经理可用版市场观点分析”。
+
+本次输出风格：{output_style}
+风格要求：{style_instruction}
 
 请严格按照以下结构输出，不要遗漏任何部分：
 
@@ -337,7 +381,7 @@ def build_deepseek_prompt(text):
 """
 
 
-def call_deepseek_market_analysis(text, model):
+def call_deepseek_market_analysis(text, model, output_style):
     client = get_deepseek_client()
     if client is None:
         raise ValueError("没有读取到 DEEPSEEK_API_KEY。请先在 .env 文件里填写你的 DeepSeek API Key。")
@@ -346,7 +390,7 @@ def call_deepseek_market_analysis(text, model):
         model=model,
         messages=[
             {"role": "system", "content": "你是一名财富管理市场研究助理。"},
-            {"role": "user", "content": build_deepseek_prompt(text)},
+            {"role": "user", "content": build_deepseek_prompt(text, output_style)},
         ],
         temperature=0.3,
     )
@@ -1344,6 +1388,12 @@ with left:
 with right:
     st.markdown("#### 模型和正文")
     model_name = st.text_input("DeepSeek 模型名称", value=DEFAULT_DEEPSEEK_MODEL)
+    output_style = st.selectbox(
+        "输出风格",
+        options=list(OUTPUT_STYLES.keys()),
+        index=0,
+        help="选择不同客户沟通场景，DeepSeek 会按对应风格组织内容。",
+    )
     pasted_text = st.text_area(
         "粘贴财经网站内容",
         placeholder="把你从财经网站复制来的市场评论、新闻或研报摘要粘贴到这里。",
@@ -1389,7 +1439,11 @@ if st.button("生成市场观点分析", type="primary"):
     else:
         try:
             with st.spinner("正在调用 DeepSeek 生成市场观点分析..."):
-                result = call_deepseek_market_analysis(all_text, model_name.strip() or DEFAULT_DEEPSEEK_MODEL)
+                result = call_deepseek_market_analysis(
+                    all_text,
+                    model_name.strip() or DEFAULT_DEEPSEEK_MODEL,
+                    output_style,
+                )
             st.divider()
             render_result(result)
             render_extracted_images(extracted_images)
@@ -1403,8 +1457,9 @@ with st.sidebar:
     st.write("2. 也可以粘贴财经新闻/报告链接。")
     st.write("3. 上传 PDF/Word 时，工具只筛选可能支撑观点的图表图片。")
     st.write("4. 如果链接读取失败，就手动复制正文粘贴进输入框。")
-    st.write("5. 在项目根目录创建 .env，并填写 DeepSeek API Key。")
-    st.write("6. 点击“生成市场观点分析”。")
-    st.write("7. 复制完整报告，并按需打开下方支撑图表核对。")
+    st.write("5. 可以选择客户经理、投顾、高净值、微信短版或晨会汇报风格。")
+    st.write("6. 在线部署时建议设置 APP_PASSWORD，避免他人随意消耗 API 额度。")
+    st.write("7. 点击“生成市场观点分析”。")
+    st.write("8. 复制完整报告，并按需打开下方支撑图表核对。")
     st.divider()
     st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek。")
