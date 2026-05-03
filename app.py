@@ -454,9 +454,12 @@ def call_deepseek_followup(question, model):
         {
             "role": "system",
             "content": (
-                "你是一名财富管理市场研究助理。请基于用户上传的市场材料和已经生成的市场观点分析，"
-                "回答用户追问。回答要专业、清楚、能被客户经理直接使用；不要编造原文没有的具体数据；"
-                "涉及投资观点时必须说明依据和风险边界；不承诺收益，不给确定性买卖建议。"
+                "你是一名财富管理市场研究助理。请结合用户上传的市场材料、已经生成的市场观点分析，"
+                "以及你自身的通用金融市场知识和推理能力，回答用户追问。上传材料是优先依据，"
+                "但不要被材料完全限制；当材料没有覆盖问题时，可以给出模型补充判断。"
+                "回答时要清楚区分：1）原文依据；2）模型补充判断；3）需要进一步核实的信息。"
+                "不要编造原文没有的具体数据或假装原文提过；涉及投资观点时必须说明依据和风险边界；"
+                "不承诺收益，不给确定性买卖建议。"
             ),
         },
         {
@@ -466,7 +469,8 @@ def call_deepseek_followup(question, model):
                 f"{source_text}\n\n"
                 "以下是已经生成的市场观点分析：\n"
                 f"{report}\n\n"
-                "请记住以上上下文，后续围绕这份材料回答问题。"
+                "请记住以上上下文。后续回答追问时，优先参考本次材料；如需超出材料范围，"
+                "可以使用你的通用市场知识进行补充，但必须明确写出“模型补充判断”，并提示不等同于原文结论。"
             ),
         },
     ]
@@ -1437,7 +1441,7 @@ def render_followup_chat(model_name):
 
     st.divider()
     st.subheader("继续追问")
-    st.caption("围绕本次上传材料和已生成报告继续提问，例如：这个观点怎么跟稳健客户解释？短期机会里哪个风险最大？")
+    st.caption("可以基于本次材料继续追问，也可以让 DeepSeek 结合通用市场知识补充判断；回答会区分原文依据和模型补充。")
 
     col_a, col_b = st.columns([1, 4])
     with col_a:
@@ -1458,7 +1462,7 @@ def render_followup_chat(model_name):
 
         try:
             with st.chat_message("assistant"):
-                with st.spinner("正在基于本次材料继续分析..."):
+                with st.spinner("正在结合材料和模型知识继续分析..."):
                     answer = call_deepseek_followup(question, model_name.strip() or DEFAULT_DEEPSEEK_MODEL)
                 st.markdown(answer)
             st.session_state["followup_messages"].append({"role": "assistant", "content": answer})
@@ -1595,7 +1599,7 @@ with st.sidebar:
     st.write("6. 可以选择客户经理、投顾、高净值、微信短版或晨会汇报风格。")
     st.write("7. 在线部署时建议设置 APP_PASSWORD，避免他人随意消耗 API 额度。")
     st.write("8. 点击“生成市场观点分析”。")
-    st.write("9. 生成后可以在下方继续追问，围绕本次材料做讨论。")
+    st.write("9. 生成后可以继续追问，DeepSeek 会结合本次材料和通用市场知识回答。")
     st.write("10. 复制完整报告，并按需打开下方支撑图表核对。")
     st.divider()
     st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek。")
