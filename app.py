@@ -94,19 +94,21 @@ def inject_custom_css():
         """
         <style>
         :root {
-            --app-bg: #f6f4ef;
+            --app-bg: #ffffff;
             --panel: #ffffff;
-            --panel-soft: #fbfaf7;
-            --ink: #1f2933;
-            --muted: #65727f;
-            --line: #dfd8cc;
-            --accent: #0f766e;
-            --accent-strong: #0b5f59;
-            --gold: #b7791f;
+            --panel-soft: #fff7f7;
+            --ink: #1f1f1f;
+            --muted: #666666;
+            --line: #e7e7e7;
+            --accent: #db0011;
+            --accent-strong: #a8000d;
+            --accent-soft: #fff1f2;
+            --dark: #20242a;
         }
 
         .stApp {
-            background: var(--app-bg);
+            background:
+                linear-gradient(180deg, #ffffff 0%, #ffffff 54%, #fafafa 100%);
             color: var(--ink);
         }
 
@@ -117,18 +119,20 @@ def inject_custom_css():
         }
 
         section[data-testid="stSidebar"] {
-            background: #f0ede6;
+            background: #fafafa;
             border-right: 1px solid var(--line);
         }
 
         .app-hero {
-            background: var(--panel);
+            background:
+                linear-gradient(90deg, rgba(219, 0, 17, 0.08), rgba(255, 255, 255, 0) 38%),
+                var(--panel);
             border: 1px solid var(--line);
-            border-left: 5px solid var(--accent);
+            border-top: 5px solid var(--accent);
             border-radius: 8px;
-            padding: 22px 24px;
+            padding: 24px 26px;
             margin-bottom: 20px;
-            box-shadow: 0 10px 28px rgba(31, 41, 51, 0.06);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.06);
         }
 
         .app-kicker {
@@ -141,7 +145,7 @@ def inject_custom_css():
 
         .app-title {
             color: var(--ink);
-            font-size: 34px;
+            font-size: 36px;
             font-weight: 760;
             line-height: 1.16;
             margin: 0 0 8px;
@@ -165,7 +169,7 @@ def inject_custom_css():
             display: inline-flex;
             align-items: center;
             border: 1px solid var(--line);
-            background: var(--panel-soft);
+            background: #ffffff;
             border-radius: 999px;
             padding: 7px 11px;
             color: var(--muted);
@@ -174,15 +178,15 @@ def inject_custom_css():
         }
 
         .status-pill.ready {
-            border-color: rgba(15, 118, 110, 0.35);
+            border-color: rgba(219, 0, 17, 0.24);
             color: var(--accent-strong);
-            background: #eef8f5;
+            background: var(--accent-soft);
         }
 
         .status-pill.warn {
-            border-color: rgba(183, 121, 31, 0.38);
-            color: #8a5a16;
-            background: #fff8e8;
+            border-color: rgba(122, 122, 122, 0.32);
+            color: #555555;
+            background: #f7f7f7;
         }
 
         div[data-testid="stFileUploader"],
@@ -192,7 +196,7 @@ def inject_custom_css():
             border: 1px solid var(--line);
             border-radius: 8px;
             padding: 14px 14px 8px;
-            box-shadow: 0 6px 18px rgba(31, 41, 51, 0.04);
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.035);
         }
 
         div[data-testid="stTextInput"] input,
@@ -207,7 +211,7 @@ def inject_custom_css():
             border-radius: 7px;
             min-height: 46px;
             font-weight: 700;
-            box-shadow: 0 8px 18px rgba(15, 118, 110, 0.18);
+            box-shadow: 0 8px 18px rgba(219, 0, 17, 0.16);
         }
 
         .stButton > button:hover {
@@ -223,6 +227,8 @@ def inject_custom_css():
         h2 {
             padding-top: 8px;
             color: var(--ink);
+            border-left: 4px solid var(--accent);
+            padding-left: 10px;
         }
 
         .stTabs [data-baseweb="tab-list"] {
@@ -240,6 +246,10 @@ def inject_custom_css():
             background: var(--panel);
             border: 1px solid var(--line);
             border-radius: 8px;
+        }
+
+        hr {
+            border-color: var(--line);
         }
 
         div[data-testid="stAlert"] {
@@ -1429,8 +1439,8 @@ api_status_text = "DeepSeek 已配置" if api_ready else "等待配置 API Key"
 st.markdown(
     f"""
     <div class="app-hero">
-        <div class="app-kicker">财富管理市场研究助理</div>
-        <h1 class="app-title">Market Briefing Tool</h1>
+        <div class="app-kicker">财富管理客户沟通工作台</div>
+        <h1 class="app-title">Market Briefing Assistant</h1>
         <p class="app-subtitle">
             上传市场展望、研报或财经网页内容，生成客户经理可直接使用的市场观点分析、短期机会提示、图表线索和客户沟通话术。
         </p>
