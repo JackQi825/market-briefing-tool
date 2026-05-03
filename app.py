@@ -26,6 +26,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 MAX_INPUT_CHARS = 50000
+MAX_COMPARE_DOCUMENTS = 5
 MAX_EXTRACTED_IMAGES = 8
 MIN_CHART_WIDTH = 420
 MIN_CHART_HEIGHT = 240
@@ -302,8 +303,39 @@ if not require_password():
     st.stop()
 
 
-def build_deepseek_prompt(text, output_style):
-    trimmed_text = text[:MAX_INPUT_CHARS]
+def format_documents_for_prompt(documents):
+    if not documents:
+        return ""
+
+    per_document_limit = max(4000, MAX_INPUT_CHARS // max(len(documents), 1))
+    blocks = []
+    for index, document in enumerate(documents, start=1):
+        content = clean_text(document["text"])[:per_document_limit]
+        blocks.append(
+            f"【材料{index}：{document['name']}】\n{content}"
+        )
+    return "\n\n---\n\n".join(blocks)[:MAX_INPUT_CHARS]
+
+
+def build_deepseek_prompt(text, output_style, documents=None):
+    documents = documents or []
+    trimmed_text = format_documents_for_prompt(documents) if documents else text[:MAX_INPUT_CHARS]
+    document_count = len(documents) if documents else 1
+    compare_instruction = ""
+    if document_count >= 2:
+        compare_instruction = f"""
+
+特别说明：本次输入包含 {document_count} 份材料，请先分别理解每份材料，再做交叉分析。不要把多份材料简单拼接成一份来看。
+
+九、多文档对比分析
+请输出以下内容：
+- 共识观点：列出3-6条多份材料都支持或方向一致的观点。每条说明哪些材料支持、为什么重要。
+- 分歧点：列出2-5条不同材料之间的判断差异。每条说明分歧来自哪里、可能原因是什么、客户经理应该如何解释。
+- 强弱信号排序：把最确定、最有一致性的市场信号排在前面，把证据不足或分歧较大的观点排在后面。
+- 对客户沟通的取舍建议：哪些观点可以作为主线讲，哪些只能作为补充观察，哪些需要谨慎表达。
+- 如果某份材料明显更偏短期交易、某份更偏中长期配置，请明确区分。
+"""
+
     style_instruction = OUTPUT_STYLES.get(output_style, OUTPUT_STYLES["客户经理简洁版"])
     return f"""
 你是一名财富管理客户经理的市场研究助理。请基于以下市场展望文件内容，生成一份“客户经理可用版市场观点分析”。
@@ -383,6 +415,8 @@ def build_deepseek_prompt(text, output_style):
 6. 如果原文没有提到某类资产，请明确写“原文信息有限”，并基于宏观线索谨慎推断，不要编造具体数据。
 7. 对机会型观点要特别敏感，看到“短期、战术、阶段性、关注、受益、催化、交易、主题、反弹、修复、窗口期、配置价值”等表达时，要单独提炼到第四部分。
 8. 任何机会型观点都必须配风险提示，不能表达成确定收益或直接买卖建议。
+9. 如果输入包含多份材料，请明确标注观点来自哪份材料，并区分“多份材料共识”和“单一材料观点”。
+{compare_instruction}
 
 以下是市场展望文件内容：
 ---
@@ -391,7 +425,7 @@ def build_deepseek_prompt(text, output_style):
 """
 
 
-def call_deepseek_market_analysis(text, model, output_style):
+def call_deepseek_market_analysis(text, model, output_style, documents=None):
     client = get_deepseek_client()
     if client is None:
         raise ValueError("没有读取到 DEEPSEEK_API_KEY。请先在 .env 文件里填写你的 DeepSeek API Key。")
@@ -400,7 +434,7 @@ def call_deepseek_market_analysis(text, model, output_style):
         model=model,
         messages=[
             {"role": "system", "content": "你是一名财富管理市场研究助理。"},
-            {"role": "user", "content": build_deepseek_prompt(text, output_style)},
+            {"role": "user", "content": build_deepseek_prompt(text, output_style, documents)},
         ],
         temperature=0.3,
     )
@@ -1447,6 +1481,7 @@ st.markdown(
         <div class="status-row">
             <span class="status-pill {api_status_class}">{api_status_text}</span>
             <span class="status-pill">PDF / Word / TXT</span>
+            <span class="status-pill">最多 5 份报告对比</span>
             <span class="status-pill">网页链接读取</span>
             <span class="status-pill">支撑图表筛选</span>
         </div>
@@ -1462,7 +1497,7 @@ left, right = st.columns([1, 1])
 with left:
     st.markdown("#### 文件和链接")
     uploaded_files = st.file_uploader(
-        "上传 PDF、Word、TXT 文件",
+        "上传 PDF、Word、TXT 文件（最多 5 份报告）",
         type=["pdf", "docx", "txt"],
         accept_multiple_files=True,
     )
@@ -1490,15 +1525,19 @@ with right:
 st.divider()
 
 if st.button("生成市场观点分析", type="primary"):
-    texts = []
+    documents = []
     extracted_images = []
 
     if uploaded_files:
+        if len(uploaded_files) > MAX_COMPARE_DOCUMENTS:
+            st.error(f"最多支持上传 {MAX_COMPARE_DOCUMENTS} 份报告做对比，请减少文件数量后再生成。")
+            st.stop()
+
         for uploaded_file in uploaded_files:
             try:
                 text = read_uploaded_file(uploaded_file)
                 if text:
-                    texts.append(text)
+                    documents.append({"name": uploaded_file.name, "text": text})
                 images = extract_uploaded_images(uploaded_file)
                 extracted_images.extend(images)
                 if images:
@@ -1511,25 +1550,28 @@ if st.button("生成市场观点分析", type="primary"):
         with st.spinner(f"正在读取网页：{url}"):
             text, error = fetch_url_text(url)
         if text:
-            texts.append(text)
+            documents.append({"name": f"网页链接：{url}", "text": text})
             st.success(f"已读取网页：{url}")
         else:
             st.warning(f"{url} 读取失败：{error}。请手动复制网页正文，粘贴到右侧输入框。")
 
     if pasted_text.strip():
-        texts.append(pasted_text)
+        documents.append({"name": "手动粘贴内容", "text": pasted_text})
 
-    all_text = clean_text("\n\n".join(texts))
+    all_text = clean_text("\n\n".join(document["text"] for document in documents))
 
     if not all_text:
         st.error("请先上传文件，或粘贴一段市场内容。")
     else:
         try:
+            if len(documents) >= 2:
+                st.info(f"已识别 {len(documents)} 份材料，将生成多文档对比分析，包括共识观点和分歧点。")
             with st.spinner("正在调用 DeepSeek 生成市场观点分析..."):
                 result = call_deepseek_market_analysis(
                     all_text,
                     model_name.strip() or DEFAULT_DEEPSEEK_MODEL,
                     output_style,
+                    documents,
                 )
             st.session_state["analysis_source_text"] = all_text
             st.session_state["analysis_result"] = result
@@ -1546,13 +1588,14 @@ render_followup_chat(model_name)
 with st.sidebar:
     st.header("使用说明")
     st.write("1. 上传 PDF、Word 或 TXT 文件。")
-    st.write("2. 也可以粘贴财经新闻/报告链接。")
-    st.write("3. 上传 PDF/Word 时，工具只筛选可能支撑观点的图表图片。")
-    st.write("4. 如果链接读取失败，就手动复制正文粘贴进输入框。")
-    st.write("5. 可以选择客户经理、投顾、高净值、微信短版或晨会汇报风格。")
-    st.write("6. 在线部署时建议设置 APP_PASSWORD，避免他人随意消耗 API 额度。")
-    st.write("7. 点击“生成市场观点分析”。")
-    st.write("8. 生成后可以在下方继续追问，围绕本次材料做讨论。")
-    st.write("9. 复制完整报告，并按需打开下方支撑图表核对。")
+    st.write("2. 可同时上传最多 5 份报告，DeepSeek 会输出共识观点和分歧点。")
+    st.write("3. 也可以粘贴财经新闻/报告链接。")
+    st.write("4. 上传 PDF/Word 时，工具只筛选可能支撑观点的图表图片。")
+    st.write("5. 如果链接读取失败，就手动复制正文粘贴进输入框。")
+    st.write("6. 可以选择客户经理、投顾、高净值、微信短版或晨会汇报风格。")
+    st.write("7. 在线部署时建议设置 APP_PASSWORD，避免他人随意消耗 API 额度。")
+    st.write("8. 点击“生成市场观点分析”。")
+    st.write("9. 生成后可以在下方继续追问，围绕本次材料做讨论。")
+    st.write("10. 复制完整报告，并按需打开下方支撑图表核对。")
     st.divider()
     st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek。")
