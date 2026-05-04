@@ -2,6 +2,7 @@ streamlit
 pypdf
 python-docx
 requests
+urllib3<2
 beautifulsoup4
 openai
 python-dotenv

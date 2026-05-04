@@ -23,7 +23,9 @@ from pypdf import PdfReader
 APP_DIR = Path(__file__).resolve().parent
 load_dotenv(APP_DIR / ".env")
 
-st.set_page_config(page_title="Market Briefing Tool", page_icon="📊", layout="wide")
+APP_DISPLAY_NAME = "Jack 市场沟通助手"
+
+st.set_page_config(page_title=APP_DISPLAY_NAME, page_icon="📊", layout="wide")
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
@@ -385,7 +387,7 @@ def require_password():
         """
         <div class="app-hero">
             <div class="app-kicker">财富管理客户沟通工作台</div>
-            <h1 class="app-title">Market Briefing Assistant</h1>
+            <h1 class="app-title">Jack 市场沟通助手</h1>
             <p class="app-subtitle">请输入访问密码，进入市场观点分析工具。</p>
         </div>
         """,
@@ -484,7 +486,7 @@ def build_deepseek_prompt(text, output_style, documents=None):
 输出要求：
 - 如果原文文字里能读到图表或表格信息，请列出2-5条“图表传递的关键信号”。
 - 每条都按“图表/数据说明了什么 / 对市场判断有什么帮助 / 客户怎么理解”的格式写。
-- 如果文档包含图片图表但正文没有足够图注或数据，请写“图表图片需要人工核对”，并提示客户经理查看页面下方提取出的图表图片。
+- 如果文档包含图片图表但正文没有足够图注或数据，请写“图表图片需要人工核对”，并尽量提示客户经理应该回到原文查看哪类图表、哪一段附近的图表或哪组数据。
 - 不要编造图表中没有出现的具体数字。
 
 六、主要风险
@@ -1137,7 +1139,6 @@ def read_uploaded_file(file):
 
 def collect_input_documents(uploaded_files, url_text, pasted_text):
     documents = []
-    extracted_images = []
 
     if uploaded_files:
         if len(uploaded_files) > MAX_COMPARE_DOCUMENTS:
@@ -1149,10 +1150,6 @@ def collect_input_documents(uploaded_files, url_text, pasted_text):
                 text = read_uploaded_file(uploaded_file)
                 if text:
                     documents.append({"name": uploaded_file.name, "text": text})
-                images = extract_uploaded_images(uploaded_file)
-                extracted_images.extend(images)
-                if images:
-                    st.success(f"{uploaded_file.name} 已筛选出 {len(images)} 张可能需要保留的支撑图表。")
             except Exception as exc:
                 st.warning(f"{uploaded_file.name} 读取失败：{exc}")
 
@@ -1170,7 +1167,7 @@ def collect_input_documents(uploaded_files, url_text, pasted_text):
         documents.append({"name": "手动粘贴内容", "text": pasted_text})
 
     all_text = clean_text("\n\n".join(document["text"] for document in documents))
-    return documents, extracted_images, all_text
+    return documents, all_text
 
 
 def normalize_url(url):
@@ -1599,23 +1596,6 @@ def render_result(result):
         st.text_area("完整市场观点分析", result, height=620)
 
 
-def render_extracted_images(images):
-    if not images:
-        return
-
-    with st.expander("可能需要保留的支撑图表", expanded=False):
-        st.info("只展示与数据、趋势、估值、收益率、资产表现等文字线索相关的较大图片。仍建议人工核对，确认是否真的需要放进客户材料。")
-
-        for index, image in enumerate(images, start=1):
-            st.image(
-                image["bytes"],
-                caption=f"{index}. {image['caption']}（{image['width']} x {image['height']}，相关度 {image['score']}）",
-                use_container_width=True,
-            )
-            if image.get("context"):
-                st.caption(f"相关文字线索：{image['context']}")
-
-
 def render_copy_panel(title, text, key):
     text = text or ""
     safe_title = escape(title)
@@ -1806,7 +1786,7 @@ st.markdown(
     f"""
     <div class="app-hero">
         <div class="app-kicker">财富管理客户沟通工作台</div>
-        <h1 class="app-title">Market Briefing Assistant</h1>
+        <h1 class="app-title">Jack 市场沟通助手</h1>
         <p class="app-subtitle">
             上传市场展望、研报或财经网页内容，生成客户经理可直接使用的市场观点分析、短期机会提示、图表线索和客户沟通话术。
         </p>
@@ -1815,7 +1795,7 @@ st.markdown(
             <span class="status-pill">PDF / Word / TXT</span>
             <span class="status-pill">最多 5 份报告对比</span>
             <span class="status-pill">网页链接读取</span>
-            <span class="status-pill">支撑图表筛选</span>
+            <span class="status-pill">图表线索提示</span>
             <span class="status-pill">三版客户触达文案</span>
         </div>
     </div>
@@ -1864,7 +1844,7 @@ with button_right:
     generate_touch_copy = st.button("生成客户触达文案", use_container_width=True)
 
 if generate_analysis or generate_touch_copy:
-    documents, extracted_images, all_text = collect_input_documents(uploaded_files, url_text, pasted_text)
+    documents, all_text = collect_input_documents(uploaded_files, url_text, pasted_text)
 
     if not all_text:
         st.error("请先上传文件，或粘贴一段市场内容。")
@@ -1885,7 +1865,6 @@ if generate_analysis or generate_touch_copy:
                 st.session_state["followup_messages"] = []
                 st.divider()
                 render_result(result)
-                render_extracted_images(extracted_images)
             except Exception as exc:
                 st.error(f"DeepSeek 调用失败：{exc}")
                 st.info("请检查 .env 里的 DEEPSEEK_API_KEY 是否正确、网络是否可用、模型名称是否有效。")
@@ -1917,13 +1896,13 @@ with st.sidebar:
     st.write("1. 上传 PDF、Word 或 TXT 文件。")
     st.write("2. 可同时上传最多 5 份报告，DeepSeek 会输出共识观点和分歧点。")
     st.write("3. 也可以粘贴财经新闻/报告链接。")
-    st.write("4. 上传 PDF/Word 时，工具只筛选可能支撑观点的图表图片。")
+    st.write("4. 工具不再自动提取图片；如果材料文字里提到关键图表，会提示你回原文查看。")
     st.write("5. 如果链接读取失败，就手动复制正文粘贴进输入框。")
     st.write("6. 可以选择略懂客户、小白客户、客户经理自用或内部群同事分享风格。")
     st.write("7. 在线部署时建议设置 APP_PASSWORD，避免他人随意消耗 API 额度。")
     st.write("8. 点击“生成市场观点分析”可以得到完整解读。")
     st.write("9. 点击“生成客户触达文案”可以得到 3 个可复制版本，并自动保留最近 10 次历史。")
     st.write("10. 生成分析后可以继续追问，DeepSeek 会结合本次材料和通用市场知识回答。")
-    st.write("11. 复制完整报告，并按需打开下方支撑图表核对。")
+    st.write("11. 复制完整报告，并按需回到原文核对关键图表或数据。")
     st.divider()
     st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek。")
