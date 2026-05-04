@@ -69,7 +69,7 @@ TOUCH_COPY_SYSTEM_PROMPT = """
 {
   "one_liner": "一句话市场观点的内容",
   "deep_push": "针对性深度推送的内容",
-  "care_touch": "关怀型触达的内容"
+  "care_touch": "钩子型触达的内容"
 }
 
 【字数要求】
@@ -80,7 +80,14 @@ TOUCH_COPY_SYSTEM_PROMPT = """
 补充要求:
 - one_liner: 一段话,带 emoji 装饰,必须包含发生了什么 + 对客户意味着什么 + 1 个具体建议,适合周一群发。
 - deep_push: 称呼 + 3 段落,必须包含事实 + 判断 + 建议 + 行动召唤,适合配置缺口客户、不同地域市场或板块关注客户。
-- care_touch: 简短温暖问候 + 与市场相关的关心,不能有任何销售话术。
+- care_touch: 这是“钩子型触达”,目标是让不关心市场的客户也想回复你。不要写“保重身体”“调整心态”“市场波动较大请保持平常心”这类温暖空话。
+- care_touch 必须从以下 4 种模式里选择一种来写,但不要在文案里标注模式名称:
+  1. 反常识: 用一个和客户直觉相反的市场观察开头,例如“这轮上涨最值得看的可能不是涨得最多的资产”。
+  2. 场景代入: 把市场变化放进客户真实生活或资产配置场景里,例如“如果这笔钱 3 个月内不用,现在最该看的不是收益率高低,而是流动性和波动”。
+  3. 冷知识: 提供一个有信息密度的小观察,例如利率、美元、黄金、港股、债券之间的联动,但不要编造具体数据。
+  4. 轻幽默: 语气轻一点,但保持专业,可以有一点反差感,不能油腻、不能像段子。
+- care_touch 必须包含一个“可回复的钩子”,例如“您最近更关心稳一点还是机会多一点?”、“我可以帮您看一眼组合里有没有受影响的部分。”
+- care_touch 不能有任何销售话术,不能直接推荐产品,不能催促购买,不能承诺收益。
 - 可以基于用户资料和你自身通用金融市场知识共同分析和补充,但不要编造具体数据。
 """
 
@@ -1667,7 +1674,7 @@ def render_touch_history():
             box.innerHTML = '<div style="color:#6b7280;font-size:14px;">生成后会自动保存在本机浏览器里。</div>';
         } else {
             box.innerHTML = items.map((item, index) => {
-                const allText = `🎯 一句话市场观点\\n${item.one_liner || ""}\\n\\n📊 针对性深度推送\\n${item.deep_push || ""}\\n\\n💝 关怀型触达\\n${item.care_touch || ""}`;
+                const allText = `🎯 一句话市场观点\\n${item.one_liner || ""}\\n\\n📊 针对性深度推送\\n${item.deep_push || ""}\\n\\n💝 钩子型触达(撩客户)\\n${item.care_touch || ""}`;
                 window[`historyCopyText_${index}`] = allText;
                 return `
                     <details style="border:1px solid #f0dddd;border-radius:12px;background:#fffafa;margin-bottom:10px;padding:10px;">
@@ -1691,7 +1698,7 @@ def render_touch_copy_result(result):
     touch_tabs = st.tabs([
         "🎯 一句话市场观点",
         "📊 针对性深度推送",
-        "💝 关怀型触达",
+        "💝 钩子型触达(撩客户)",
     ])
 
     with touch_tabs[0]:
@@ -1699,7 +1706,8 @@ def render_touch_copy_result(result):
     with touch_tabs[1]:
         render_copy_panel("针对性深度推送", result["deep_push"], "deep-push")
     with touch_tabs[2]:
-        render_copy_panel("关怀型触达", result["care_touch"], "care-touch")
+        render_copy_panel("钩子型触达(撩客户)", result["care_touch"], "care-touch")
+        st.caption("目标:让不关心市场的客户也想回复你")
 
     save_touch_history(result)
     render_touch_history()
