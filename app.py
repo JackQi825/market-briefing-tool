@@ -27,8 +27,20 @@ APP_DISPLAY_NAME = "Jack 市场沟通助手"
 
 st.set_page_config(page_title=APP_DISPLAY_NAME, page_icon="📊", layout="wide")
 
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEFAULT_DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+MODEL_PROVIDERS = {
+    "DeepSeek": {
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "model_env": "DEEPSEEK_MODEL",
+        "base_url": "https://api.deepseek.com",
+        "default_model": "deepseek-v4-flash",
+    },
+    "Gemini": {
+        "api_key_env": "GEMINI_API_KEY",
+        "model_env": "GEMINI_MODEL",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "default_model": "gemini-3-pro-preview",
+    },
+}
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 MAX_INPUT_CHARS = 50000
 MAX_COMPARE_DOCUMENTS = 5
@@ -369,11 +381,21 @@ def inject_custom_css():
 inject_custom_css()
 
 
-def get_deepseek_client():
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+def get_provider_config(provider):
+    return MODEL_PROVIDERS.get(provider, MODEL_PROVIDERS["DeepSeek"])
+
+
+def get_default_model(provider):
+    config = get_provider_config(provider)
+    return os.getenv(config["model_env"], config["default_model"])
+
+
+def get_ai_client(provider):
+    config = get_provider_config(provider)
+    api_key = os.getenv(config["api_key_env"])
     if not api_key:
         return None
-    return OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
+    return OpenAI(api_key=api_key, base_url=config["base_url"])
 
 
 def require_password():
@@ -529,10 +551,11 @@ def build_deepseek_prompt(text, output_style, documents=None):
 """
 
 
-def call_deepseek_market_analysis(text, model, output_style, documents=None):
-    client = get_deepseek_client()
+def call_market_analysis(text, provider, model, output_style, documents=None):
+    client = get_ai_client(provider)
     if client is None:
-        raise ValueError("没有读取到 DEEPSEEK_API_KEY。请先在 .env 文件里填写你的 DeepSeek API Key。")
+        api_key_env = get_provider_config(provider)["api_key_env"]
+        raise ValueError(f"没有读取到 {api_key_env}。请先在 .env 文件或线上 Secrets 里填写 API Key。")
 
     response = client.chat.completions.create(
         model=model,
@@ -553,26 +576,27 @@ def parse_touch_copy_response(raw_text):
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"DeepSeek 没有返回可识别的 JSON：{raw_text[:200]}")
+        raise ValueError(f"模型没有返回可识别的 JSON：{raw_text[:200]}")
 
     json_text = re.sub(r",\s*}", "}", cleaned[start:end + 1])
     try:
         data = json.loads(json_text)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"DeepSeek 返回的 JSON 格式不完整：{exc}") from exc
+        raise ValueError(f"模型返回的 JSON 格式不完整：{exc}") from exc
 
     required_keys = ("one_liner", "deep_push", "care_touch")
     missing_keys = [key for key in required_keys if not data.get(key)]
     if missing_keys:
-        raise ValueError(f"DeepSeek 返回内容缺少字段：{', '.join(missing_keys)}")
+        raise ValueError(f"模型返回内容缺少字段：{', '.join(missing_keys)}")
 
     return {key: str(data[key]).strip() for key in required_keys}
 
 
-def call_deepseek_touch_copy(text, model):
-    client = get_deepseek_client()
+def call_touch_copy(text, provider, model):
+    client = get_ai_client(provider)
     if client is None:
-        raise ValueError("没有读取到 DEEPSEEK_API_KEY。请先在 .env 文件里填写你的 DeepSeek API Key。")
+        api_key_env = get_provider_config(provider)["api_key_env"]
+        raise ValueError(f"没有读取到 {api_key_env}。请先在 .env 文件或线上 Secrets 里填写 API Key。")
 
     trimmed_text = text[:MAX_INPUT_CHARS]
     response = client.chat.completions.create(
@@ -586,10 +610,11 @@ def call_deepseek_touch_copy(text, model):
     return parse_touch_copy_response(response.choices[0].message.content)
 
 
-def call_deepseek_followup(question, model):
-    client = get_deepseek_client()
+def call_followup(question, provider, model):
+    client = get_ai_client(provider)
     if client is None:
-        raise ValueError("没有读取到 DEEPSEEK_API_KEY。请先在 .env 文件里填写你的 DeepSeek API Key。")
+        api_key_env = get_provider_config(provider)["api_key_env"]
+        raise ValueError(f"没有读取到 {api_key_env}。请先在 .env 文件或线上 Secrets 里填写 API Key。")
 
     source_text = st.session_state.get("analysis_source_text", "")
     report = st.session_state.get("analysis_result", "")
@@ -1743,13 +1768,13 @@ def render_touch_copy_result(result):
     render_touch_history()
 
 
-def render_followup_chat(model_name):
+def render_followup_chat(provider, model_name):
     if not st.session_state.get("analysis_result"):
         return
 
     st.divider()
     st.subheader("继续追问")
-    st.caption("可以基于本次材料继续追问，也可以让 DeepSeek 结合通用市场知识补充判断；回答会区分原文依据和模型补充。")
+    st.caption(f"可以基于本次材料继续追问，也可以让 {provider} 结合通用市场知识补充判断；回答会区分原文依据和模型补充。")
 
     col_a, col_b = st.columns([1, 4])
     with col_a:
@@ -1771,16 +1796,23 @@ def render_followup_chat(model_name):
         try:
             with st.chat_message("assistant"):
                 with st.spinner("正在结合材料和模型知识继续分析..."):
-                    answer = call_deepseek_followup(question, model_name.strip() or DEFAULT_DEEPSEEK_MODEL)
+                    answer = call_followup(question, provider, model_name.strip() or get_default_model(provider))
                 st.markdown(answer)
             st.session_state["followup_messages"].append({"role": "assistant", "content": answer})
         except Exception as exc:
             st.error(f"追问失败：{exc}")
 
 
-api_ready = bool(os.getenv("DEEPSEEK_API_KEY"))
+provider_names = list(MODEL_PROVIDERS.keys())
+default_provider = os.getenv("MODEL_PROVIDER", "DeepSeek")
+if default_provider not in MODEL_PROVIDERS:
+    default_provider = "DeepSeek"
+
+selected_provider = st.session_state.get("selected_provider", default_provider)
+selected_config = get_provider_config(selected_provider)
+api_ready = bool(os.getenv(selected_config["api_key_env"]))
 api_status_class = "ready" if api_ready else "warn"
-api_status_text = "DeepSeek 已配置" if api_ready else "等待配置 API Key"
+api_status_text = f"{selected_provider} 已配置" if api_ready else f"等待配置 {selected_config['api_key_env']}"
 
 st.markdown(
     f"""
@@ -1822,12 +1854,24 @@ with left:
 
 with right:
     st.markdown("#### 模型和正文")
-    model_name = st.text_input("DeepSeek 模型名称", value=DEFAULT_DEEPSEEK_MODEL)
+    selected_provider = st.selectbox(
+        "模型服务商",
+        options=provider_names,
+        index=provider_names.index(selected_provider),
+        help="DeepSeek 和 Gemini 都通过 OpenAI SDK 兼容方式调用。",
+        key="selected_provider",
+    )
+    selected_config = get_provider_config(selected_provider)
+    model_name = st.text_input(
+        "模型名称",
+        value=get_default_model(selected_provider),
+        help=f"{selected_provider} 默认模型：{selected_config['default_model']}",
+    )
     output_style = st.selectbox(
         "输出风格",
         options=list(OUTPUT_STYLES.keys()),
         index=0,
-        help="选择材料最终给谁看，DeepSeek 会按对应受众调整解释深度、语言和重点。",
+        help="选择材料最终给谁看，模型会按对应受众调整解释深度、语言和重点。",
     )
     pasted_text = st.text_area(
         "粘贴财经网站内容",
@@ -1853,10 +1897,11 @@ if generate_analysis or generate_touch_copy:
             try:
                 if len(documents) >= 2:
                     st.info(f"已识别 {len(documents)} 份材料，将生成多文档对比分析，包括共识观点和分歧点。")
-                with st.spinner("正在调用 DeepSeek 生成市场观点分析..."):
-                    result = call_deepseek_market_analysis(
+                with st.spinner(f"正在调用 {selected_provider} 生成市场观点分析..."):
+                    result = call_market_analysis(
                         all_text,
-                        model_name.strip() or DEFAULT_DEEPSEEK_MODEL,
+                        selected_provider,
+                        model_name.strip() or get_default_model(selected_provider),
                         output_style,
                         documents,
                     )
@@ -1866,35 +1911,36 @@ if generate_analysis or generate_touch_copy:
                 st.divider()
                 render_result(result)
             except Exception as exc:
-                st.error(f"DeepSeek 调用失败：{exc}")
-                st.info("请检查 .env 里的 DEEPSEEK_API_KEY 是否正确、网络是否可用、模型名称是否有效。")
+                st.error(f"{selected_provider} 调用失败：{exc}")
+                st.info(f"请检查 {selected_config['api_key_env']} 是否正确、网络是否可用、模型名称是否有效。")
 
         if generate_touch_copy:
             try:
                 if len(documents) >= 2:
                     st.info(f"已识别 {len(documents)} 份材料，将综合提炼成客户触达文案。")
-                with st.spinner("正在调用 DeepSeek 生成 3 个客户触达版本..."):
-                    touch_result = call_deepseek_touch_copy(
+                with st.spinner(f"正在调用 {selected_provider} 生成 3 个客户触达版本..."):
+                    touch_result = call_touch_copy(
                         all_text,
-                        model_name.strip() or DEFAULT_DEEPSEEK_MODEL,
+                        selected_provider,
+                        model_name.strip() or get_default_model(selected_provider),
                     )
                 st.session_state["touch_copy_result"] = touch_result
                 st.divider()
                 render_touch_copy_result(touch_result)
             except Exception as exc:
                 st.error(f"客户触达文案生成失败：{exc}")
-                st.info("请检查 .env 里的 DEEPSEEK_API_KEY 是否正确、网络是否可用、模型名称是否有效。")
+                st.info(f"请检查 {selected_config['api_key_env']} 是否正确、网络是否可用、模型名称是否有效。")
 
 if st.session_state.get("touch_copy_result") and not generate_touch_copy:
     st.divider()
     render_touch_copy_result(st.session_state["touch_copy_result"])
 
-render_followup_chat(model_name)
+render_followup_chat(selected_provider, model_name)
 
 with st.sidebar:
     st.header("使用说明")
     st.write("1. 上传 PDF、Word 或 TXT 文件。")
-    st.write("2. 可同时上传最多 5 份报告，DeepSeek 会输出共识观点和分歧点。")
+    st.write("2. 可同时上传最多 5 份报告，模型会输出共识观点和分歧点。")
     st.write("3. 也可以粘贴财经新闻/报告链接。")
     st.write("4. 工具不再自动提取图片；如果材料文字里提到关键图表，会提示你回原文查看。")
     st.write("5. 如果链接读取失败，就手动复制正文粘贴进输入框。")
@@ -1902,7 +1948,7 @@ with st.sidebar:
     st.write("7. 在线部署时建议设置 APP_PASSWORD，避免他人随意消耗 API 额度。")
     st.write("8. 点击“生成市场观点分析”可以得到完整解读。")
     st.write("9. 点击“生成客户触达文案”可以得到 3 个可复制版本，并自动保留最近 10 次历史。")
-    st.write("10. 生成分析后可以继续追问，DeepSeek 会结合本次材料和通用市场知识回答。")
+    st.write("10. 生成分析后可以继续追问，模型会结合本次材料和通用市场知识回答。")
     st.write("11. 复制完整报告，并按需回到原文核对关键图表或数据。")
     st.divider()
-    st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek。")
+    st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek / Gemini。")

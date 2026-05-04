@@ -12,4 +12,4 @@ pinned: false
 
 # Jack 市场沟通助手
 
-A Streamlit tool for generating client-ready market briefing analysis from uploaded PDF, Word, TXT files, pasted text, or web links.
+A Streamlit tool for generating client-ready market briefing analysis from uploaded PDF, Word, TXT files, pasted text, or web links. Supports DeepSeek and Gemini through OpenAI-compatible API calls.
