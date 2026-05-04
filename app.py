@@ -2,13 +2,16 @@ import re
 import os
 import zipfile
 import hashlib
+import json
 from io import BytesIO
+from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
 
 import fitz
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from docx import Document
 from dotenv import load_dotenv
@@ -38,6 +41,48 @@ OUTPUT_STYLES = {
     "微信短版": "整体更短、更像微信沟通内容，优先输出客户能快速读懂的结论和配置启发。",
     "晨会汇报版": "结构更适合内部晨会，突出市场主线、资产观点、短期机会、风险提示和可跟进客户话术。",
 }
+
+TOUCH_COPY_SYSTEM_PROMPT = """
+你是一位资深的财富管理客户经理触达文案专家。
+
+你的任务:用户会提供市场观点/研报/新闻,你需要将其转化为 3种不同风格的客户触达文案。
+
+【核心原则 — 3S 法则】
+1. Selective(精准):内容要有针对性,不要平庸的"市场总结"
+2. Sharp(尖锐):必须给出明确判断,不要模糊的"投资者保持谨慎"
+3. Single(单一):一条文案只讲 1 个核心观点,不要堆积信息
+
+【写作公式】
+每条文案必须包含三要素:
+- 【市场事件】发生了什么(简洁)
+- 【对客户的影响】这意味着什么(专业判断)
+- 【建议动作】客户可以做什么(具体可执行)
+
+【绝对禁忌】
+- ❌ 不要出现"投资有风险,入市需谨慎"等套话
+- ❌ 不要照抄原文,要重新组织语言
+- ❌ 不要用过多金融术语,用客户能懂的话
+- ❌ 不要超过指定字数
+
+【输出格式】
+严格按以下 JSON 格式输出,不要输出 Markdown,不要输出代码块:
+{
+  "one_liner": "一句话市场观点的内容",
+  "deep_push": "针对性深度推送的内容",
+  "care_touch": "关怀型触达的内容"
+}
+
+【字数要求】
+- one_liner: 30-80 字
+- deep_push: 150-250 字
+- care_touch: 50-100 字
+
+补充要求:
+- one_liner: 一段话,带 emoji 装饰,必须包含发生了什么 + 对客户意味着什么 + 1 个具体建议,适合周一群发。
+- deep_push: 称呼 + 3 段落,必须包含事实 + 判断 + 建议 + 行动召唤,适合配置缺口客户、不同地域市场或板块关注客户。
+- care_touch: 简短温暖问候 + 与市场相关的关心,不能有任何销售话术。
+- 可以基于用户资料和你自身通用金融市场知识共同分析和补充,但不要编造具体数据。
+"""
 
 CHART_RELEVANCE_KEYWORDS = [
     "图",
@@ -439,6 +484,47 @@ def call_deepseek_market_analysis(text, model, output_style, documents=None):
         temperature=0.3,
     )
     return response.choices[0].message.content
+
+
+def parse_touch_copy_response(raw_text):
+    cleaned = raw_text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError(f"DeepSeek 没有返回可识别的 JSON：{raw_text[:200]}")
+
+    json_text = re.sub(r",\s*}", "}", cleaned[start:end + 1])
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"DeepSeek 返回的 JSON 格式不完整：{exc}") from exc
+
+    required_keys = ("one_liner", "deep_push", "care_touch")
+    missing_keys = [key for key in required_keys if not data.get(key)]
+    if missing_keys:
+        raise ValueError(f"DeepSeek 返回内容缺少字段：{', '.join(missing_keys)}")
+
+    return {key: str(data[key]).strip() for key in required_keys}
+
+
+def call_deepseek_touch_copy(text, model):
+    client = get_deepseek_client()
+    if client is None:
+        raise ValueError("没有读取到 DEEPSEEK_API_KEY。请先在 .env 文件里填写你的 DeepSeek API Key。")
+
+    trimmed_text = text[:MAX_INPUT_CHARS]
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": TOUCH_COPY_SYSTEM_PROMPT},
+            {"role": "user", "content": trimmed_text},
+        ],
+        temperature=0.4,
+    )
+    return parse_touch_copy_response(response.choices[0].message.content)
 
 
 def call_deepseek_followup(question, model):
@@ -992,6 +1078,44 @@ def read_uploaded_file(file):
     return ""
 
 
+def collect_input_documents(uploaded_files, url_text, pasted_text):
+    documents = []
+    extracted_images = []
+
+    if uploaded_files:
+        if len(uploaded_files) > MAX_COMPARE_DOCUMENTS:
+            st.error(f"最多支持上传 {MAX_COMPARE_DOCUMENTS} 份报告做对比，请减少文件数量后再生成。")
+            st.stop()
+
+        for uploaded_file in uploaded_files:
+            try:
+                text = read_uploaded_file(uploaded_file)
+                if text:
+                    documents.append({"name": uploaded_file.name, "text": text})
+                images = extract_uploaded_images(uploaded_file)
+                extracted_images.extend(images)
+                if images:
+                    st.success(f"{uploaded_file.name} 已筛选出 {len(images)} 张可能需要保留的支撑图表。")
+            except Exception as exc:
+                st.warning(f"{uploaded_file.name} 读取失败：{exc}")
+
+    urls = [line.strip() for line in url_text.splitlines() if line.strip()]
+    for url in urls:
+        with st.spinner(f"正在读取网页：{url}"):
+            text, error = fetch_url_text(url)
+        if text:
+            documents.append({"name": f"网页链接：{url}", "text": text})
+            st.success(f"已读取网页：{url}")
+        else:
+            st.warning(f"{url} 读取失败：{error}。请手动复制网页正文，粘贴到右侧输入框。")
+
+    if pasted_text.strip():
+        documents.append({"name": "手动粘贴内容", "text": pasted_text})
+
+    all_text = clean_text("\n\n".join(document["text"] for document in documents))
+    return documents, extracted_images, all_text
+
+
 def normalize_url(url):
     url = url.strip()
     if not url:
@@ -1435,6 +1559,152 @@ def render_extracted_images(images):
                 st.caption(f"相关文字线索：{image['context']}")
 
 
+def render_copy_panel(title, text, key):
+    text = text or ""
+    safe_title = escape(title)
+    safe_text = escape(text)
+    text_json = json.dumps(text, ensure_ascii=False).replace("</", "<\\/")
+    safe_key = re.sub(r"[^a-zA-Z0-9_]", "_", key)
+    height = max(220, min(430, 150 + len(text) // 2))
+
+    components.html(
+        f"""
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;border:1px solid #ead4d4;border-radius:14px;padding:18px 18px 16px;background:#fffafa;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;">
+                <div style="font-weight:700;color:#1f2937;font-size:16px;">{safe_title}</div>
+                <button id="copy-{safe_key}" style="border:1px solid #c8102e;background:#c8102e;color:white;border-radius:999px;padding:8px 14px;font-weight:700;cursor:pointer;">📋 复制</button>
+            </div>
+            <div style="white-space:pre-wrap;line-height:1.75;color:#20252d;font-size:15px;background:white;border:1px solid #f2dddd;border-radius:12px;padding:14px;">{safe_text}</div>
+            <div id="msg-{safe_key}" style="display:none;margin-top:10px;color:#c8102e;font-size:13px;font-weight:700;">已复制</div>
+        </div>
+        <script>
+        const copyText_{safe_key} = {text_json};
+        const button_{safe_key} = document.getElementById("copy-{safe_key}");
+        const message_{safe_key} = document.getElementById("msg-{safe_key}");
+        button_{safe_key}.onclick = async () => {{
+            try {{
+                await navigator.clipboard.writeText(copyText_{safe_key});
+            }} catch (error) {{
+                const area = document.createElement("textarea");
+                area.value = copyText_{safe_key};
+                document.body.appendChild(area);
+                area.select();
+                document.execCommand("copy");
+                document.body.removeChild(area);
+            }}
+            message_{safe_key}.style.display = "block";
+            setTimeout(() => message_{safe_key}.style.display = "none", 1600);
+        }};
+        </script>
+        """,
+        height=height,
+        scrolling=True,
+    )
+
+
+def save_touch_history(result):
+    entry_id = hashlib.sha256(
+        json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+    entry = {
+        "id": entry_id,
+        "one_liner": result.get("one_liner", ""),
+        "deep_push": result.get("deep_push", ""),
+        "care_touch": result.get("care_touch", ""),
+    }
+    entry_json = json.dumps(entry, ensure_ascii=False).replace("</", "<\\/")
+
+    components.html(
+        f"""
+        <script>
+        const storageKey = "marketBriefingTouchHistory";
+        const entry = {entry_json};
+        const now = new Date();
+        entry.time = now.toLocaleString("zh-CN", {{ hour12: false }});
+        const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
+        const updated = [entry, ...existing.filter(item => item.id !== entry.id)].slice(0, 10);
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+        </script>
+        """,
+        height=0,
+    )
+
+
+def render_touch_history():
+    components.html(
+        """
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;border-top:1px solid #ead4d4;padding-top:14px;">
+            <div style="font-weight:800;color:#1f2937;margin-bottom:10px;">最近 10 次生成历史</div>
+            <div id="touch-history"></div>
+        </div>
+        <script>
+        const storageKey = "marketBriefingTouchHistory";
+        const box = document.getElementById("touch-history");
+        const items = JSON.parse(localStorage.getItem(storageKey) || "[]");
+        function escapeHtml(value) {
+            return String(value || "").replace(/[&<>"']/g, s => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+            }[s]));
+        }
+        async function copyText(text, id) {
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch (error) {
+                const area = document.createElement("textarea");
+                area.value = text;
+                document.body.appendChild(area);
+                area.select();
+                document.execCommand("copy");
+                document.body.removeChild(area);
+            }
+            const tip = document.getElementById(`history-tip-${id}`);
+            if (tip) {
+                tip.style.display = "inline";
+                setTimeout(() => tip.style.display = "none", 1400);
+            }
+        }
+        if (!items.length) {
+            box.innerHTML = '<div style="color:#6b7280;font-size:14px;">生成后会自动保存在本机浏览器里。</div>';
+        } else {
+            box.innerHTML = items.map((item, index) => {
+                const allText = `🎯 一句话市场观点\\n${item.one_liner || ""}\\n\\n📊 针对性深度推送\\n${item.deep_push || ""}\\n\\n💝 关怀型触达\\n${item.care_touch || ""}`;
+                window[`historyCopyText_${index}`] = allText;
+                return `
+                    <details style="border:1px solid #f0dddd;border-radius:12px;background:#fffafa;margin-bottom:10px;padding:10px;">
+                        <summary style="cursor:pointer;color:#20252d;font-weight:700;">${escapeHtml(item.time)}｜${escapeHtml(item.one_liner).slice(0, 42)}</summary>
+                        <div style="white-space:pre-wrap;line-height:1.65;color:#374151;font-size:13px;margin:10px 0;">${escapeHtml(allText)}</div>
+                        <button onclick="copyText(window.historyCopyText_${index}, ${index})" style="border:1px solid #c8102e;background:white;color:#c8102e;border-radius:999px;padding:6px 12px;font-weight:700;cursor:pointer;">📋 复制这次</button>
+                        <span id="history-tip-${index}" style="display:none;color:#c8102e;font-size:12px;margin-left:8px;font-weight:700;">已复制</span>
+                    </details>
+                `;
+            }).join("");
+        }
+        </script>
+        """,
+        height=380,
+        scrolling=True,
+    )
+
+
+def render_touch_copy_result(result):
+    st.subheader("客户触达文案")
+    touch_tabs = st.tabs([
+        "🎯 一句话市场观点",
+        "📊 针对性深度推送",
+        "💝 关怀型触达",
+    ])
+
+    with touch_tabs[0]:
+        render_copy_panel("一句话市场观点（用于周一群发）", result["one_liner"], "one-liner")
+    with touch_tabs[1]:
+        render_copy_panel("针对性深度推送", result["deep_push"], "deep-push")
+    with touch_tabs[2]:
+        render_copy_panel("关怀型触达", result["care_touch"], "care-touch")
+
+    save_touch_history(result)
+    render_touch_history()
+
+
 def render_followup_chat(model_name):
     if not st.session_state.get("analysis_result"):
         return
@@ -1488,6 +1758,7 @@ st.markdown(
             <span class="status-pill">最多 5 份报告对比</span>
             <span class="status-pill">网页链接读取</span>
             <span class="status-pill">支撑图表筛选</span>
+            <span class="status-pill">三版客户触达文案</span>
         </div>
     </div>
     """,
@@ -1528,64 +1799,58 @@ with right:
 
 st.divider()
 
-if st.button("生成市场观点分析", type="primary"):
-    documents = []
-    extracted_images = []
+button_left, button_right = st.columns([1, 1])
+with button_left:
+    generate_analysis = st.button("生成市场观点分析", type="primary", use_container_width=True)
+with button_right:
+    generate_touch_copy = st.button("生成客户触达文案", use_container_width=True)
 
-    if uploaded_files:
-        if len(uploaded_files) > MAX_COMPARE_DOCUMENTS:
-            st.error(f"最多支持上传 {MAX_COMPARE_DOCUMENTS} 份报告做对比，请减少文件数量后再生成。")
-            st.stop()
-
-        for uploaded_file in uploaded_files:
-            try:
-                text = read_uploaded_file(uploaded_file)
-                if text:
-                    documents.append({"name": uploaded_file.name, "text": text})
-                images = extract_uploaded_images(uploaded_file)
-                extracted_images.extend(images)
-                if images:
-                    st.success(f"{uploaded_file.name} 已筛选出 {len(images)} 张可能需要保留的支撑图表。")
-            except Exception as exc:
-                st.warning(f"{uploaded_file.name} 读取失败：{exc}")
-
-    urls = [line.strip() for line in url_text.splitlines() if line.strip()]
-    for url in urls:
-        with st.spinner(f"正在读取网页：{url}"):
-            text, error = fetch_url_text(url)
-        if text:
-            documents.append({"name": f"网页链接：{url}", "text": text})
-            st.success(f"已读取网页：{url}")
-        else:
-            st.warning(f"{url} 读取失败：{error}。请手动复制网页正文，粘贴到右侧输入框。")
-
-    if pasted_text.strip():
-        documents.append({"name": "手动粘贴内容", "text": pasted_text})
-
-    all_text = clean_text("\n\n".join(document["text"] for document in documents))
+if generate_analysis or generate_touch_copy:
+    documents, extracted_images, all_text = collect_input_documents(uploaded_files, url_text, pasted_text)
 
     if not all_text:
         st.error("请先上传文件，或粘贴一段市场内容。")
     else:
-        try:
-            if len(documents) >= 2:
-                st.info(f"已识别 {len(documents)} 份材料，将生成多文档对比分析，包括共识观点和分歧点。")
-            with st.spinner("正在调用 DeepSeek 生成市场观点分析..."):
-                result = call_deepseek_market_analysis(
-                    all_text,
-                    model_name.strip() or DEFAULT_DEEPSEEK_MODEL,
-                    output_style,
-                    documents,
-                )
-            st.session_state["analysis_source_text"] = all_text
-            st.session_state["analysis_result"] = result
-            st.session_state["followup_messages"] = []
-            st.divider()
-            render_result(result)
-            render_extracted_images(extracted_images)
-        except Exception as exc:
-            st.error(f"DeepSeek 调用失败：{exc}")
-            st.info("请检查 .env 里的 DEEPSEEK_API_KEY 是否正确、网络是否可用、模型名称是否有效。")
+        if generate_analysis:
+            try:
+                if len(documents) >= 2:
+                    st.info(f"已识别 {len(documents)} 份材料，将生成多文档对比分析，包括共识观点和分歧点。")
+                with st.spinner("正在调用 DeepSeek 生成市场观点分析..."):
+                    result = call_deepseek_market_analysis(
+                        all_text,
+                        model_name.strip() or DEFAULT_DEEPSEEK_MODEL,
+                        output_style,
+                        documents,
+                    )
+                st.session_state["analysis_source_text"] = all_text
+                st.session_state["analysis_result"] = result
+                st.session_state["followup_messages"] = []
+                st.divider()
+                render_result(result)
+                render_extracted_images(extracted_images)
+            except Exception as exc:
+                st.error(f"DeepSeek 调用失败：{exc}")
+                st.info("请检查 .env 里的 DEEPSEEK_API_KEY 是否正确、网络是否可用、模型名称是否有效。")
+
+        if generate_touch_copy:
+            try:
+                if len(documents) >= 2:
+                    st.info(f"已识别 {len(documents)} 份材料，将综合提炼成客户触达文案。")
+                with st.spinner("正在调用 DeepSeek 生成 3 个客户触达版本..."):
+                    touch_result = call_deepseek_touch_copy(
+                        all_text,
+                        model_name.strip() or DEFAULT_DEEPSEEK_MODEL,
+                    )
+                st.session_state["touch_copy_result"] = touch_result
+                st.divider()
+                render_touch_copy_result(touch_result)
+            except Exception as exc:
+                st.error(f"客户触达文案生成失败：{exc}")
+                st.info("请检查 .env 里的 DEEPSEEK_API_KEY 是否正确、网络是否可用、模型名称是否有效。")
+
+if st.session_state.get("touch_copy_result") and not generate_touch_copy:
+    st.divider()
+    render_touch_copy_result(st.session_state["touch_copy_result"])
 
 render_followup_chat(model_name)
 
@@ -1598,8 +1863,9 @@ with st.sidebar:
     st.write("5. 如果链接读取失败，就手动复制正文粘贴进输入框。")
     st.write("6. 可以选择客户经理、投顾、高净值、微信短版或晨会汇报风格。")
     st.write("7. 在线部署时建议设置 APP_PASSWORD，避免他人随意消耗 API 额度。")
-    st.write("8. 点击“生成市场观点分析”。")
-    st.write("9. 生成后可以继续追问，DeepSeek 会结合本次材料和通用市场知识回答。")
-    st.write("10. 复制完整报告，并按需打开下方支撑图表核对。")
+    st.write("8. 点击“生成市场观点分析”可以得到完整解读。")
+    st.write("9. 点击“生成客户触达文案”可以得到 3 个可复制版本，并自动保留最近 10 次历史。")
+    st.write("10. 生成分析后可以继续追问，DeepSeek 会结合本次材料和通用市场知识回答。")
+    st.write("11. 复制完整报告，并按需打开下方支撑图表核对。")
     st.divider()
     st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek。")
