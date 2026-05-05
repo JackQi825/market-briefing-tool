@@ -1951,4 +1951,12 @@ with st.sidebar:
     st.write("10. 生成分析后可以继续追问，模型会结合本次材料和通用市场知识回答。")
     st.write("11. 复制完整报告，并按需回到原文核对关键图表或数据。")
     st.divider()
+    st.subheader("模型配置检测")
+    for provider, config in MODEL_PROVIDERS.items():
+        key_ready = bool(os.getenv(config["api_key_env"]))
+        model_value = os.getenv(config["model_env"], config["default_model"])
+        status = "已读取 API Key" if key_ready else f"未读取 {config['api_key_env']}"
+        st.write(f"{provider}：{status}")
+        st.caption(f"模型：{model_value}")
+    st.divider()
     st.write("说明：本版本通过 OpenAI Python SDK 的兼容方式调用 DeepSeek / Gemini。")
